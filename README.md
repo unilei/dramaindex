@@ -1,17 +1,21 @@
 # DramaIndex — short-drama database & trend tracker
 
+**Live: https://unilei.github.io/dramaindex/** (GitHub Pages, free hosting)
+
 A static, crawlable index of short-drama series (ReelShort, DramaBox) plus
 daily US App Store chart positions for the whole short-drama app category.
 
 ## What's here
 
 ```
-pipeline/collect.py     crawl public catalogs -> data/snapshots/<date>.json
-pipeline/build_site.py  snapshots -> site/ (HTML, sitemap, JSON feeds)
-run_daily.sh            crawl + rebuild, for cron
-data/snapshots/         one JSON per crawl day (this is the trend history)
-data/raw/<date>/        raw HTTP bodies, gzipped (audit trail + rerun cache)
-site/                   generated output, deploy this directory
+pipeline/collect.py         crawl public catalogs -> data/snapshots/<date>.json
+pipeline/build_site.py      snapshots -> site/ (HTML, sitemap, JSON feeds)
+pipeline/submit_indexnow.py submit sitemap URLs to search engines
+deploy.sh                   publish site/ to the gh-pages branch
+run_daily.sh                crawl + build + deploy + submit, for the scheduler
+data/snapshots/             one JSON per crawl day (this is the trend history)
+data/raw/<date>/            raw HTTP bodies, gzipped (audit trail + rerun cache)
+site/                       generated output (gitignored; lives on gh-pages)
 ```
 
 ## Running it
@@ -19,22 +23,47 @@ site/                   generated output, deploy this directory
 ```sh
 python3 pipeline/collect.py      # ~8 min, polite 1.5s delay between requests
 python3 pipeline/build_site.py   # a few seconds
-# or both:
-./run_daily.sh
+# or the whole chain:
+DRAMADB_DOMAIN=unilei.github.io/dramaindex ./run_daily.sh
 ```
 
 No third-party dependencies — standard library only.
 
+## Scheduled job
+
+Installed as a launchd agent so it runs daily without a terminal open:
+
+```sh
+launchctl list | grep dramadb                    # check it is registered
+launchctl start com.lei.dramadb.daily            # run now
+tail -f data/cron.log                            # watch it work
+```
+
+Plist: `~/Library/LaunchAgents/com.lei.dramadb.daily.plist` (09:20 daily).
+launchd is used instead of cron because it runs a missed job on the next wake
+rather than skipping the day — a skipped day is trend history that cannot be
+recovered retroactively.
+
 ## Deploying
 
 ```sh
-DRAMADB_DOMAIN=dramaindex.com python3 pipeline/build_site.py
-# then upload site/ to any static host (Cloudflare Pages, Netlify, S3, nginx)
+DRAMADB_DOMAIN=unilei.github.io/dramaindex ./deploy.sh
 ```
 
-Set `DRAMADB_DOMAIN` **before** the final build so `sitemap.xml` and
-`robots.txt` carry real absolute URLs. Without it they emit `example.com`,
-which is a placeholder and must not be shipped.
+`deploy.sh` **refuses to publish** while `sitemap.xml` still contains the
+`example.com` placeholder, because shipping it would teach search engines the
+wrong host. Set `DRAMADB_DOMAIN` to the real host first.
+
+Moving to a custom domain later: point the domain at GitHub Pages, then rerun
+`deploy.sh` with the new `DRAMADB_DOMAIN` so sitemap, robots.txt and the
+IndexNow key location all follow.
+
+## Search submission
+
+`submit_indexnow.py` pushes the URL set to IndexNow (Bing, Yandex, Seznam,
+Naver) after each build. Ownership is proven by the `<key>.txt` file the
+generator writes to the site root. Google is not on IndexNow — submit
+`sitemap.xml` once in Google Search Console to cover it.
 
 ## Data sources and their terms
 
@@ -51,6 +80,10 @@ opt-out and it is respected.
 ### What we deliberately do not collect
 
 - No video, no episode bodies, no paywalled chapters.
+- No full reproduction of platform synopses. Series pages quote a short
+  excerpt (≤200 chars, cut on a word boundary) for identification and link to
+  the source listing. Republishing thousands of complete descriptions would be
+  redistribution, not indexing.
 - No logged-in or partner-only endpoints. The RS Boost distributor portal
   (`cps.reelshort.com`) is behind a login and is never touched by this
   pipeline — its terms forbid scraping its data for commercial use.
