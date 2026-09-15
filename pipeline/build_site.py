@@ -38,6 +38,11 @@ SITE_TAGLINE = "The short-drama database"
 SITE_DOMAIN = os.environ.get("DRAMADB_DOMAIN", "example.com").rstrip("/")
 SITE_SCHEME = "https"
 
+# IndexNow key: hosting <key>.txt at the site root proves domain ownership so
+# search engines accept bulk URL submissions without an account. Generated
+# once and kept stable; changing it invalidates prior submissions.
+INDEXNOW_KEY = os.environ.get("DRAMADB_INDEXNOW_KEY", "").strip()
+
 # Referral/affiliate base URLs. Left blank until the affiliate account exists;
 # blank means outbound links are plain (non-monetised) links, which keeps the
 # site honest while the affiliate application is pending.
@@ -279,6 +284,13 @@ def build():
     (OUT / "genre").mkdir()
     (OUT / "data").mkdir()
     (OUT / "style.css").write_text(CSS, encoding="utf-8")
+
+    # GitHub Pages runs Jekyll by default, which skips files it does not
+    # recognise. An empty .nojekyll disables that and serves everything as-is.
+    (OUT / ".nojekyll").write_text("", encoding="utf-8")
+
+    if INDEXNOW_KEY:
+        (OUT / f"{INDEXNOW_KEY}.txt").write_text(INDEXNOW_KEY, encoding="utf-8")
 
     # ---- group by platform, sorted by engagement -------------------------
     by_platform: dict[str, list[dict]] = defaultdict(list)

@@ -25,4 +25,14 @@ echo "--- interpreter: $PY"
 
 echo "--- drama pages: $(ls site/drama | wc -l | tr -d ' ')"
 echo "--- genre hubs:  $(ls site/genre | wc -l | tr -d ' ')"
+
+# Publish. Without this the crawl accumulates locally and the live site never
+# changes, which defeats the point of running daily.
+if [ -n "${DRAMADB_DOMAIN:-}" ]; then
+  DRAMADB_DOMAIN="$DRAMADB_DOMAIN" "$HERE/deploy.sh"
+  "$PY" pipeline/submit_indexnow.py || echo "--- indexnow submission failed (non-fatal)"
+else
+  echo "--- DRAMADB_DOMAIN not set; skipping deploy (site rebuilt locally only)"
+fi
+
 echo "--- done"
