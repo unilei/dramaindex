@@ -43,6 +43,16 @@ SITE_SCHEME = "https"
 # once and kept stable; changing it invalidates prior submissions.
 INDEXNOW_KEY = os.environ.get("DRAMADB_INDEXNOW_KEY", "").strip()
 
+# Search-console verification files, as "filename:contents" pairs. Kept in the
+# generator because build_site.py wipes site/ on every run, so a file dropped
+# in by hand would silently vanish at the next daily build and un-verify the
+# property. Comma-separated for multiple consoles.
+SITE_VERIFICATION_FILES = [
+    pair.split(":", 1)
+    for pair in os.environ.get("DRAMADB_VERIFY_FILES", "").split(",")
+    if ":" in pair
+]
+
 # Referral/affiliate base URLs. Left blank until the affiliate account exists;
 # blank means outbound links are plain (non-monetised) links, which keeps the
 # site honest while the affiliate application is pending.
@@ -291,6 +301,11 @@ def build():
 
     if INDEXNOW_KEY:
         (OUT / f"{INDEXNOW_KEY}.txt").write_text(INDEXNOW_KEY, encoding="utf-8")
+
+    for name, content in SITE_VERIFICATION_FILES:
+        name = name.strip()
+        if name:
+            (OUT / name).write_text(content.strip(), encoding="utf-8")
 
     # ---- group by platform, sorted by engagement -------------------------
     by_platform: dict[str, list[dict]] = defaultdict(list)
