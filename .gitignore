@@ -1,0 +1,14 @@
+# Raw HTTP cache: regenerable, large, no need to version
+data/raw/
+
+# Runtime logs from the scheduled job
+data/cron.log
+data/cron.err.log
+
+# Generated site output: rebuilt from data/snapshots + pipeline, and pushed
+# separately to the gh-pages branch by deploy.sh
+site/
+
+__pycache__/
+*.pyc
+.DS_Store
