@@ -647,7 +647,10 @@ Where outbound links are present they may be referral links.</p>""",
         for g, items in genre_map.items()
         if len(items) >= MIN_GENRE_HUB
     ]
-    today = date.today().isoformat()
+    # lastmod must be UTC. Using local time on a UTC+8 machine stamps dates a
+    # day ahead of the crawler's clock, and a future lastmod is a documented
+    # reason for a sitemap to be rejected outright.
+    today = datetime.now(timezone.utc).date().isoformat()
     sm = "\n".join(
         f"  <url><loc>{SITE_SCHEME}://{SITE_DOMAIN}/{u}</loc>"
         f"<lastmod>{today}</lastmod></url>"
