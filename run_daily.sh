@@ -1,11 +1,11 @@
 #!/bin/sh
 # Daily refresh: crawl, rebuild the site, report.
 #
-# This is the PRIMARY crawler, not a backup. That was tried the other way round
-# and does not work: DramaBox answers 403 to GitHub's runner IP ranges, and
-# DramaBox is 3,047 of the 3,866 series, so an Actions-based crawl can only
-# produce a catalogue missing ~79% of its pages. See .github/workflows/ for the
-# manual-only workflow that is kept for the day that block is lifted.
+# This machine is the only crawler, by necessity rather than preference.
+# DramaBox answers 403 to GitHub's runner IP ranges while returning 200 here,
+# and DramaBox is 3,047 of the 3,866 series - so a runner-based crawl could only
+# ever produce a catalogue missing ~79% of its pages. A GitHub Actions workflow
+# was tried for this and removed for that reason.
 #
 # Why daily at all: the app-store chart history and shelf-rank movement are only
 # meaningful as a time series. A single snapshot shows a catalogue; a series
