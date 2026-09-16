@@ -349,14 +349,30 @@ MIN_COVERAGE = 0.7
 
 
 def previous_counts() -> dict[str, int]:
-    """Row counts from the most recent snapshot, for the coverage check."""
-    files = sorted(SNAPS.glob("*.json"))
-    for f in reversed(files):
+    """Row counts from the last good crawl, for the coverage check.
+
+    Prefers a local full snapshot. On a fresh checkout there is none - the
+    snapshots are gitignored, since only the trend series is committed - so this
+    falls back to the committed history. Without that fallback the guard would
+    have nothing to compare against on exactly the environment most likely to be
+    blocked, and would wave the crawl through.
+    """
+    for f in reversed(sorted(SNAPS.glob("*.json"))):
         try:
             d = json.loads(f.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             continue
         counts = {pf: len(d.get(pf, [])) for pf in TREND_FIELDS}
+        if any(counts.values()):
+            return counts
+
+    for f in reversed(sorted(HISTORY.glob("*.json.gz"))):
+        try:
+            with gzip.open(f, "rt", encoding="utf-8") as fh:
+                d = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            continue
+        counts = {pf: len(d.get(pf, {}) or {}) for pf in TREND_FIELDS}
         if any(counts.values()):
             return counts
     return {}

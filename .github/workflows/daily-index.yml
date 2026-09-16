@@ -1,22 +1,25 @@
 name: daily-index
 
-# Runs the same pipeline as the local launchd job, but on GitHub's runners so a
-# day is never lost when the Mac is off, asleep, or on battery.
+# NOT SCHEDULED. Manual use only - see the note below before enabling the cron.
 #
-# Two schedule entries at different minutes are deliberate: GitHub's scheduled
-# runs are best-effort and can be delayed or dropped under load, so a second
-# attempt later in the day gives the crawl another chance. The job is a no-op if
-# a snapshot for today already exists, which also makes it safe to run alongside
-# the local launchd job.
+# This was built to be the primary scheduler so a day would not be lost when the
+# Mac is off. It cannot serve that role: DramaBox answers 403 to every request
+# from GitHub's runner IP ranges (verified twice - homepage and all 25 category
+# pages, while the same URLs return 200 from a home connection). DramaBox is
+# 3,047 of the 3,866 series, so a runner-based crawl can only ever produce a
+# catalogue with ~79% of its pages missing.
+#
+# That failure mode is quiet: the crawl "succeeds" with zero DramaBox rows. One
+# run did exactly that and published a site whose sitemap fell from 3,984 URLs
+# to 862 before the guards below existed.
+#
+# So the local machine stays the primary crawler - it is the only place DramaBox
+# is reachable - and this workflow is kept only for manual runs and as a ready
+# fallback if the block is lifted or a proxy is put in front of it. Enabling the
+# schedule is safe now that collect.py refuses to publish an incomplete crawl,
+# but the job would fail every time rather than produce a site.
 
 on:
-  schedule:
-    # 01:10 UTC = 09:10 Beijing. Before the local 09:20 job, so on a normal day
-    # this one wins and the local job becomes the backup rather than the reverse.
-    - cron: "10 1 * * *"
-    # 13:10 UTC = 21:10 Beijing. Catches the case where the first attempt was
-    # dropped by the scheduler.
-    - cron: "10 13 * * *"
   workflow_dispatch:
 
 permissions:

@@ -46,18 +46,31 @@ fi
 # live sitemap from 3,984 URLs to 862 in a single GitHub Actions run. The
 # crawler refuses first; this catches anything that still slips through, such as
 # a stale or partially-written snapshot.
-NEW_COUNT=$(grep -c "<url>" site/sitemap.xml 2>/dev/null || echo 0)
-PREV_COUNT=$(curl -s --max-time 20 "https://${SITE_HOST_FOR_CHECK:-dramaindex.lol}/sitemap.xml" 2>/dev/null | grep -c "<url>" || echo 0)
-if [ "${NEW_COUNT:-0}" -gt 0 ] && [ "${PREV_COUNT:-0}" -gt 0 ]; then
-  if [ "$NEW_COUNT" -lt $(( PREV_COUNT * 7 / 10 )) ]; then
-    echo "" >&2
-    echo "REFUSING TO DEPLOY: the new site has $NEW_COUNT URLs but the live site" >&2
-    echo "has $PREV_COUNT - a drop that large means the crawl was blocked or" >&2
-    echo "partial, not that the catalogue shrank. Force with DRAMADB_FORCE_DEPLOY=1" >&2
-    echo "if the reduction is genuinely intended." >&2
-    [ "${DRAMADB_FORCE_DEPLOY:-}" = "1" ] || exit 1
-    echo "DRAMADB_FORCE_DEPLOY=1 set; continuing anyway." >&2
+count_urls() {
+  # grep -c prints 0 and exits 1 when there are no matches, so a trailing
+  # "|| echo 0" would emit "0\n0" and break the arithmetic test below.
+  n=$(grep -c "<url>" "$1" 2>/dev/null || true)
+  echo "${n:-0}"
+}
+
+NEW_COUNT=$(count_urls site/sitemap.xml)
+PREV_COUNT=$(
+  curl -s --max-time 20 "https://${SITE_DOMAIN:-dramaindex.lol}/sitemap.xml" 2>/dev/null \
+    | grep -c "<url>" || true
+)
+PREV_COUNT=${PREV_COUNT:-0}
+
+if [ "$NEW_COUNT" -gt 0 ] && [ "$PREV_COUNT" -gt 0 ] \
+   && [ "$NEW_COUNT" -lt $(( PREV_COUNT * 7 / 10 )) ]; then
+  echo "" >&2
+  echo "REFUSING TO DEPLOY: the new site has $NEW_COUNT URLs but the live site" >&2
+  echo "has $PREV_COUNT - a drop that large means the crawl was blocked or" >&2
+  echo "partial, not that the catalogue shrank." >&2
+  if [ "${DRAMADB_FORCE_DEPLOY:-}" != "1" ]; then
+    echo "Set DRAMADB_FORCE_DEPLOY=1 if the reduction is genuinely intended." >&2
+    exit 1
   fi
+  echo "DRAMADB_FORCE_DEPLOY=1 set; continuing anyway." >&2
 fi
 
 echo "=== publishing site/ to gh-pages ==="

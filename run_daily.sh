@@ -1,15 +1,11 @@
 #!/bin/sh
 # Daily refresh: crawl, rebuild the site, report.
 #
-# This is the BACKUP path. The primary scheduler is the GitHub Actions workflow
-# (.github/workflows/daily-index.yml), which does not depend on this machine
-# being on. launchd is kept because it has one property Actions does not: if the
-# machine is asleep at the scheduled time, it runs the job on the next wake
-# instead of skipping it, and a skipped day is trend history that cannot be
-# recovered retroactively.
-#
-# DRAMADB_SKIP_IF_DONE=1 makes the run a no-op when today's snapshot already
-# exists, so the two schedulers can coexist without crawling twice.
+# This is the PRIMARY crawler, not a backup. That was tried the other way round
+# and does not work: DramaBox answers 403 to GitHub's runner IP ranges, and
+# DramaBox is 3,047 of the 3,866 series, so an Actions-based crawl can only
+# produce a catalogue missing ~79% of its pages. See .github/workflows/ for the
+# manual-only workflow that is kept for the day that block is lifted.
 #
 # Why daily at all: the app-store chart history and shelf-rank movement are only
 # meaningful as a time series. A single snapshot shows a catalogue; a series
@@ -27,6 +23,8 @@ PY=/Users/lei/.pyenv/versions/3.12.6/bin/python3
 
 TODAY=$(date -u '+%Y-%m-%d')
 
+# A no-op when today's crawl already happened, so a manual re-run or a
+# wake-from-sleep catch-up cannot overwrite a good snapshot with a second one.
 if [ "${DRAMADB_SKIP_IF_DONE:-}" = "1" ] && [ -f "data/snapshots/$TODAY.json" ]; then
   echo "=== $(date '+%Y-%m-%d %H:%M:%S'): snapshot for $TODAY already exists, skipping ==="
   exit 0
@@ -35,6 +33,9 @@ fi
 echo "=== dramadb daily run: $(date '+%Y-%m-%d %H:%M:%S') ==="
 echo "--- interpreter: $PY"
 
+# collect.py exits non-zero without writing anything if the crawl came back
+# materially incomplete, so a blocked or partial run stops here rather than
+# propagating a shrunken catalogue to build, deploy and IndexNow.
 "$PY" pipeline/collect.py
 "$PY" pipeline/build_site.py
 
@@ -51,16 +52,22 @@ else
 fi
 
 # Commit the trend series so it accumulates in the repo rather than living only
-# on this machine. Skipped silently when there is nothing new.
+# on this machine. Scoped to data/history on purpose: an unscoped commit would
+# sweep in whatever else happened to be staged in the working copy.
 if [ "${DRAMADB_COMMIT_HISTORY:-}" = "1" ]; then
-  git add -f data/history 2>/dev/null || true
-  if git diff --cached --quiet 2>/dev/null; then
+  if git diff --quiet -- data/history 2>/dev/null && \
+     [ -z "$(git ls-files --others --exclude-standard data/history 2>/dev/null)" ]; then
     echo "--- no new trend history to commit"
   else
+    git add -f data/history 2>/dev/null || true
     git -c user.name="dramaindex-bot" \
         -c user.email="dramaindex-bot@users.noreply.github.com" \
-        commit -q -m "trend history $TODAY" && git push -q || \
-        echo "--- history commit/push failed (non-fatal)"
+        commit -q -m "trend history $TODAY" -- data/history || true
+    # Rebase before pushing: a manual commit from another machine would
+    # otherwise reject the push and silently drop this day's series.
+    git pull --rebase -q 2>/dev/null || true
+    git push -q 2>/dev/null || echo "--- history push failed (non-fatal)"
+    echo "--- trend history committed"
   fi
 fi
 
