@@ -47,18 +47,29 @@ fi
 # crawler refuses first; this catches anything that still slips through, such as
 # a stale or partially-written snapshot.
 count_urls() {
-  # grep -c prints 0 and exits 1 when there are no matches, so a trailing
-  # "|| echo 0" would emit "0\n0" and break the arithmetic test below.
-  n=$(grep -c "<url>" "$1" 2>/dev/null || true)
+  # Count occurrences, not matching lines: the sitemap happens to put each
+  # <url> on its own line today, but that is a formatting coincidence and
+  # `grep -c` would silently undercount the moment it changed. Also note
+  # `grep -c` prints 0 and exits 1 on no match, so a bare "|| echo 0" would
+  # emit "0\n0" and break the arithmetic test.
+  n=$(grep -o "<url>" "$1" 2>/dev/null | wc -l | tr -d ' ')
   echo "${n:-0}"
 }
 
 NEW_COUNT=$(count_urls site/sitemap.xml)
 PREV_COUNT=$(
   curl -s --max-time 20 "https://${SITE_DOMAIN:-dramaindex.lol}/sitemap.xml" 2>/dev/null \
-    | grep -c "<url>" || true
+    | grep -o "<url>" | wc -l | tr -d ' '
 )
 PREV_COUNT=${PREV_COUNT:-0}
+
+# Publishing an empty sitemap would de-list the whole site from search engines.
+if [ "$NEW_COUNT" -eq 0 ]; then
+  echo "" >&2
+  echo "REFUSING TO DEPLOY: site/sitemap.xml has no <url> entries. That almost" >&2
+  echo "certainly means the build failed or produced nothing." >&2
+  exit 1
+fi
 
 if [ "$NEW_COUNT" -gt 0 ] && [ "$PREV_COUNT" -gt 0 ] \
    && [ "$NEW_COUNT" -lt $(( PREV_COUNT * 7 / 10 )) ]; then
