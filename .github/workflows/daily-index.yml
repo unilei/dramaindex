@@ -39,7 +39,19 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Crawl, build, deploy
+      - name: Crawl
+        # Kept separate from the deploy step on purpose. On a datacentre runner
+        # DramaBox answers 403 to every request, so the crawl "succeeds" while
+        # returning zero rows. collect.py detects that and exits non-zero, and
+        # failing here stops the job before build/deploy/IndexNow can publish a
+        # catalogue with thousands of pages missing.
+        env:
+          DRAMADB_DOMAIN: dramaindex.lol
+          DRAMADB_INDEXNOW_KEY: "4502612d5f43462e9e01a61e5ab04411"
+          DRAMADB_VERIFY_FILES: "google70509795a48f64fd.html:google-site-verification: google70509795a48f64fd.html"
+        run: python pipeline/collect.py
+
+      - name: Build and deploy
         env:
           DRAMADB_DOMAIN: dramaindex.lol
           DRAMADB_INDEXNOW_KEY: "4502612d5f43462e9e01a61e5ab04411"
@@ -51,7 +63,6 @@ jobs:
           DRAMADB_REPO: "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
         run: |
           set -eu
-          python pipeline/collect.py
           python pipeline/build_site.py
           ./deploy.sh
           python pipeline/submit_indexnow.py

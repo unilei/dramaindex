@@ -40,6 +40,26 @@ if grep -q "example\.com" site/sitemap.xml 2>/dev/null; then
   exit 1
 fi
 
+# Second line of defence: a materially shrunken site must never overwrite a
+# larger one. A blocked crawl (DramaBox returns 403 to datacentre IPs) yields a
+# valid-looking site with thousands of pages missing; publishing it took the
+# live sitemap from 3,984 URLs to 862 in a single GitHub Actions run. The
+# crawler refuses first; this catches anything that still slips through, such as
+# a stale or partially-written snapshot.
+NEW_COUNT=$(grep -c "<url>" site/sitemap.xml 2>/dev/null || echo 0)
+PREV_COUNT=$(curl -s --max-time 20 "https://${SITE_HOST_FOR_CHECK:-dramaindex.lol}/sitemap.xml" 2>/dev/null | grep -c "<url>" || echo 0)
+if [ "${NEW_COUNT:-0}" -gt 0 ] && [ "${PREV_COUNT:-0}" -gt 0 ]; then
+  if [ "$NEW_COUNT" -lt $(( PREV_COUNT * 7 / 10 )) ]; then
+    echo "" >&2
+    echo "REFUSING TO DEPLOY: the new site has $NEW_COUNT URLs but the live site" >&2
+    echo "has $PREV_COUNT - a drop that large means the crawl was blocked or" >&2
+    echo "partial, not that the catalogue shrank. Force with DRAMADB_FORCE_DEPLOY=1" >&2
+    echo "if the reduction is genuinely intended." >&2
+    [ "${DRAMADB_FORCE_DEPLOY:-}" = "1" ] || exit 1
+    echo "DRAMADB_FORCE_DEPLOY=1 set; continuing anyway." >&2
+  fi
+fi
+
 echo "=== publishing site/ to gh-pages ==="
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT

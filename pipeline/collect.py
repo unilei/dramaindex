@@ -339,6 +339,46 @@ def write_trend_history(snapshot: dict) -> Path:
     return path
 
 
+# A crawl that returns far fewer rows than the last good run is a failure, not a
+# smaller catalogue. DramaBox returns 403 to datacentre IP ranges (GitHub
+# Actions among them), which yields a complete-but-empty result rather than an
+# exception - so without this check a blocked crawl would publish a site with
+# thousands of pages silently deleted. Raise when today's count drops below this
+# fraction of the previous snapshot.
+MIN_COVERAGE = 0.7
+
+
+def previous_counts() -> dict[str, int]:
+    """Row counts from the most recent snapshot, for the coverage check."""
+    files = sorted(SNAPS.glob("*.json"))
+    for f in reversed(files):
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        counts = {pf: len(d.get(pf, [])) for pf in TREND_FIELDS}
+        if any(counts.values()):
+            return counts
+    return {}
+
+
+def check_coverage(snapshot: dict) -> list[str]:
+    """Return a list of human-readable problems; empty means the crawl is sane."""
+    prev = previous_counts()
+    problems = []
+    for pf in TREND_FIELDS:
+        got = len(snapshot.get(pf, []))
+        was = prev.get(pf, 0)
+        if was and got < was * MIN_COVERAGE:
+            problems.append(
+                f"{pf}: {got} rows, down from {was} "
+                f"({got/was:.0%} of previous, floor is {MIN_COVERAGE:.0%})"
+            )
+        elif not was and got == 0:
+            problems.append(f"{pf}: 0 rows and no previous snapshot to compare")
+    return problems
+
+
 def main() -> int:
     stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
     print(f"collecting at {stamp}")
@@ -357,6 +397,23 @@ def main() -> int:
         "dramabox": dramabox,
         "appstore": appstore,
     }
+
+    # Refuse to write anything if the crawl came back materially incomplete.
+    # Writing a partial snapshot is worse than writing none: build_site.py would
+    # render a site missing thousands of pages, deploy.sh would publish it, and
+    # IndexNow would push the shrunken URL set to search engines - which is
+    # exactly what one GitHub Actions run did before this guard existed.
+    problems = check_coverage(snapshot)
+    if problems:
+        print("\nREFUSING TO PUBLISH - crawl looks incomplete:", file=sys.stderr)
+        for p in problems:
+            print(f"  - {p}", file=sys.stderr)
+        print(
+            "  Most likely cause for a datacentre runner is a 403/WAF block "
+            "on the origin. Leaving existing data untouched.",
+            file=sys.stderr,
+        )
+        return 2
 
     SNAPS.mkdir(parents=True, exist_ok=True)
     snap_file = SNAPS / f"{date.today().isoformat()}.json"
