@@ -1,0 +1,72 @@
+name: daily-index
+
+# Runs the same pipeline as the local launchd job, but on GitHub's runners so a
+# day is never lost when the Mac is off, asleep, or on battery.
+#
+# Two schedule entries at different minutes are deliberate: GitHub's scheduled
+# runs are best-effort and can be delayed or dropped under load, so a second
+# attempt later in the day gives the crawl another chance. The job is a no-op if
+# a snapshot for today already exists, which also makes it safe to run alongside
+# the local launchd job.
+
+on:
+  schedule:
+    # 01:10 UTC = 09:10 Beijing. Before the local 09:20 job, so on a normal day
+    # this one wins and the local job becomes the backup rather than the reverse.
+    - cron: "10 1 * * *"
+    # 13:10 UTC = 21:10 Beijing. Catches the case where the first attempt was
+    # dropped by the scheduler.
+    - cron: "10 13 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write # commit the trend series back and push gh-pages
+
+# Never let two crawls overlap and race on the same files.
+concurrency:
+  group: daily-index
+  cancel-in-progress: false
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Crawl, build, deploy
+        env:
+          DRAMADB_DOMAIN: dramaindex.lol
+          DRAMADB_INDEXNOW_KEY: "4502612d5f43462e9e01a61e5ab04411"
+          DRAMADB_VERIFY_FILES: "google70509795a48f64fd.html:google-site-verification: google70509795a48f64fd.html"
+          # deploy.sh initialises a throwaway repo and pushes to gh-pages, so it
+          # cannot reuse actions/checkout's credential helper (that lives in the
+          # source repo's local config, which the temp repo does not inherit).
+          # An explicit tokenised URL is therefore required.
+          DRAMADB_REPO: "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+        run: |
+          set -eu
+          python pipeline/collect.py
+          python pipeline/build_site.py
+          ./deploy.sh
+          python pipeline/submit_indexnow.py
+
+      - name: Commit trend history
+        # Only data/history/ is committed: it is the one part of a crawl that
+        # cannot be re-derived later. data/snapshots/ is gitignored (~3.7 MB/day).
+        run: |
+          set -eu
+          git config user.name "dramaindex-bot"
+          git config user.email "dramaindex-bot@users.noreply.github.com"
+          git add -f data/history
+          if git diff --cached --quiet; then
+            echo "no new trend history to commit"
+          else
+            git commit -m "trend history $(date -u '+%Y-%m-%d')"
+            git push
+          fi

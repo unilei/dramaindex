@@ -30,6 +30,21 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 RAW = ROOT / "data" / "raw"
 OUT = ROOT / "data"
+SNAPS = OUT / "snapshots"
+HISTORY = OUT / "history"
+
+# The full snapshot is ~3.7 MB, most of it synopsis text and cover URLs. Those
+# are catalogue fields: they are re-fetched every run and are already public on
+# the platform. What cannot be re-fetched is the movement - yesterday's shelf
+# rank and read count are gone once the platform updates. So the two are stored
+# separately: the fat catalogue snapshot stays on whichever machine ran the
+# crawl (and is not committed), while a narrow trend series is committed and
+# accumulates across runs. Committing the full snapshot would add ~1.3 GB/year
+# to the repository; the trend series is ~17 MB/year.
+TREND_FIELDS = {
+    "reelshort": ("shelf_rank", "read_count", "collect_count", "chapter_count"),
+    "dramabox": ("rank", "view_count", "follow_count", "chapter_count"),
+}
 
 UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -291,6 +306,39 @@ def collect_appstore() -> list[dict]:
     return rows
 
 
+def write_trend_history(snapshot: dict) -> Path:
+    """Write the small, committable trend series for this day.
+
+    One gzipped JSON file per day, holding only the values that change and
+    cannot be recovered later. Unchanged from the full snapshot in meaning, and
+    a superset of what the site needs to diff day over day.
+    """
+    trend = {
+        "date": snapshot.get("date"),
+        "collected_at": snapshot.get("collected_at"),
+    }
+    for pf, fields in TREND_FIELDS.items():
+        rows = {}
+        for row in snapshot.get(pf, []):
+            pid = row.get("platform_id")
+            if not pid:
+                continue
+            rows[pid] = [row.get(f) for f in fields]
+        trend[pf] = rows
+        trend[f"{pf}_fields"] = list(fields)
+
+    trend["appstore"] = [
+        {k: a.get(k) for k in ("chart", "rank", "name", "app_id")}
+        for a in snapshot.get("appstore", [])
+    ]
+
+    HISTORY.mkdir(parents=True, exist_ok=True)
+    path = HISTORY / f"{snapshot['date']}.json.gz"
+    raw = json.dumps(trend, ensure_ascii=False, separators=(",", ":")).encode()
+    path.write_bytes(gzip.compress(raw, 9))
+    return path
+
+
 def main() -> int:
     stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
     print(f"collecting at {stamp}")
@@ -310,16 +358,20 @@ def main() -> int:
         "appstore": appstore,
     }
 
-    OUT.mkdir(parents=True, exist_ok=True)
-    snap_file = OUT / "snapshots" / f"{date.today().isoformat()}.json"
-    snap_file.parent.mkdir(parents=True, exist_ok=True)
+    SNAPS.mkdir(parents=True, exist_ok=True)
+    snap_file = SNAPS / f"{date.today().isoformat()}.json"
     snap_file.write_text(
         json.dumps(snapshot, ensure_ascii=False, indent=1), encoding="utf-8"
     )
 
+    hist_file = write_trend_history(snapshot)
+
     print(
         f"\nwrote {snap_file}\n"
         f"  reelshort={len(reelshort)} dramabox={len(dramabox)} appstore={len(appstore)}"
+    )
+    print(
+        f"trend history {hist_file} ({hist_file.stat().st_size/1024:.0f} KB)"
     )
     return 0
 

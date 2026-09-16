@@ -16,6 +16,7 @@ meaningful slice of human visitors do not execute JavaScript.
 
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import re
@@ -27,6 +28,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SNAP_DIR = ROOT / "data" / "snapshots"
+HISTORY_DIR = ROOT / "data" / "history"
 OUT = ROOT / "site"
 
 SITE_NAME = "DramaIndex"
@@ -37,6 +39,16 @@ SITE_TAGLINE = "The short-drama database"
 # rather than silently shipping a wrong canonical host.
 SITE_DOMAIN = os.environ.get("DRAMADB_DOMAIN", "example.com").rstrip("/")
 SITE_SCHEME = "https"
+
+# SITE_DOMAIN may carry a path (unilei.github.io/dramaindex); the host is what
+# a CNAME file needs. GitHub Pages serves a custom domain only when a CNAME
+# naming that host sits at the site root, and build_site.py wipes site/ on
+# every run, so it has to be emitted here - a CNAME added by hand in the repo
+# would silently vanish at the next daily build and drop the domain.
+SITE_HOST = SITE_DOMAIN.split("/", 1)[0]
+CUSTOM_DOMAIN = ""
+if SITE_HOST and SITE_HOST != "example.com" and not SITE_HOST.endswith(".github.io"):
+    CUSTOM_DOMAIN = SITE_HOST
 
 # IndexNow key: hosting <key>.txt at the site root proves domain ownership so
 # search engines accept bulk URL submissions without an account. Generated
@@ -59,6 +71,15 @@ SITE_VERIFICATION_FILES = [
 REFERRAL_LINKS: dict[str, str] = {
     # RS Boost referral link, verified 2026-09-16: 302s with attribution params
     # (distribute_uid=17435) then lands on the App Store listing.
+    #
+    # This short code is bound to ONE series. Its redirect carries
+    # parm1=<book id> (Salt Kiss) and that parameter is applied server-side, so
+    # appending or overriding parm1 here does NOT change the landing series -
+    # verified by hand-building the AppsFlyer onelink URL, which returns 200
+    # without redirecting because the signature is minted server-side. Only the
+    # RS Boost resource-square can create a per-series code. So the link is
+    # labelled for what it actually does (see watch_label) rather than promised
+    # as "watch this series", which would lose the click on arrival.
     "reelshort": "https://reelslink.com/cps/cR6hNQ",
 }
 
@@ -72,6 +93,10 @@ PLATFORM_URLS = {
     "dramabox": "https://www.dramabox.com/",
 }
 
+# Platforms whose referral link opens the app but cannot be pointed at a chosen
+# series, so the call to action must not claim the series is what opens.
+SERIES_LOCKED_REFERRALS = {"reelshort"}
+
 
 def slugify(text: str) -> str:
     s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
@@ -79,6 +104,13 @@ def slugify(text: str) -> str:
 
 
 def load_snapshots() -> list[dict]:
+    """Catalogue snapshots: the full records the pages are rendered from.
+
+    These are large and machine-local (they hold synopsis text and cover URLs,
+    which are re-fetched on every crawl). On a fresh checkout - a GitHub Actions
+    runner, say - none exist, so callers must tolerate an empty list and fall
+    back to the committed trend series for anything that has to survive.
+    """
     snaps = []
     for f in sorted(SNAP_DIR.glob("*.json")):
         try:
@@ -86,6 +118,54 @@ def load_snapshots() -> list[dict]:
         except json.JSONDecodeError:
             continue
     return snaps
+
+
+def load_history() -> list[dict]:
+    """Committed trend series, oldest first: one small gzipped file per day.
+
+    This is the only part of the crawl that is committed, because it is the only
+    part that cannot be re-derived - a platform's rank and read count for a past
+    day are gone once it updates. The catalogue can always be re-fetched; this
+    cannot.
+    """
+    out = []
+    for f in sorted(HISTORY_DIR.glob("*.json.gz")):
+        try:
+            with gzip.open(f, "rt", encoding="utf-8") as fh:
+                out.append(json.load(fh))
+        except (OSError, json.JSONDecodeError):
+            continue
+    return out
+
+
+def history_deltas(history: list[dict]) -> dict[str, dict]:
+    """Per-series change between the two most recent days.
+
+    Returns {platform:series_id: {...}} with the raw previous and current values
+    plus a signed delta for each tracked metric. Empty when there is only one
+    day, which is the honest answer: a single day has no movement to report.
+    """
+    if len(history) < 2:
+        return {}
+    prev, cur = history[-2], history[-1]
+    out: dict[str, dict] = {}
+    for pf in ("reelshort", "dramabox"):
+        fields = cur.get(f"{pf}_fields") or prev.get(f"{pf}_fields") or []
+        prev_rows = prev.get(pf) or {}
+        for pid, vals in (cur.get(pf) or {}).items():
+            old = prev_rows.get(pid)
+            if old is None:
+                out.setdefault(pf, {})[pid] = {"new": True}
+                continue
+            changes = {}
+            for i, name in enumerate(fields):
+                a = old[i] if i < len(old) else None
+                b = vals[i] if i < len(vals) else None
+                if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+                    changes[name] = {"prev": a, "cur": b, "delta": b - a}
+            if changes:
+                out.setdefault(pf, {})[pid] = changes
+    return out
 
 
 def excerpt(text: str, limit: int = 200) -> str:
@@ -108,6 +188,28 @@ def excerpt(text: str, limit: int = 200) -> str:
 def outbound_url(platform: str) -> str:
     """Referral URL when one is configured, otherwise the plain platform URL."""
     return REFERRAL_LINKS.get(platform) or PLATFORM_URLS.get(platform, "#")
+
+
+def watch_label(platform: str, title: str) -> str:
+    """Call-to-action text that matches what the link actually does.
+
+    The referral short code is bound server-side to one fixed series, and the
+    binding cannot be overridden from here (see REFERRAL_LINKS). So on any other
+    series page, naming that series in the button would be a promise the link
+    cannot keep - the visitor arrives on a different show and leaves. The label
+    therefore only claims what is true: the app opens. It deliberately does not
+    repeat the page's own title back at the reader.
+    """
+    if platform in SERIES_LOCKED_REFERRALS:
+        return "Open the ReelShort app"
+    return f"Watch on {escape(PLATFORM_LABELS.get(platform, platform))}"
+
+
+def norm_title(text: str) -> str:
+    """Loose title key for matching the same series across platforms."""
+    t = re.sub(r"[^a-z0-9 ]+", " ", (text or "").lower())
+    t = re.sub(r"\b(the|a|an|my|of|and|to|in|for|with)\b", " ", t)
+    return re.sub(r"\s+", " ", t).strip()
 
 
 def affiliate_note(platform: str) -> str:
@@ -288,6 +390,11 @@ def build():
     dramas = merge(snapshots)
     print(f"merged {len(dramas)} dramas from {len(snapshots)} snapshot(s)")
 
+    history = load_history()
+    deltas = history_deltas(history)
+    deltas_date = history[-2].get("date", "") if len(history) >= 2 else ""
+    print(f"trend history: {len(history)} day(s)")
+
     if OUT.exists():
         shutil.rmtree(OUT)
     OUT.mkdir(parents=True)
@@ -302,6 +409,9 @@ def build():
 
     if INDEXNOW_KEY:
         (OUT / f"{INDEXNOW_KEY}.txt").write_text(INDEXNOW_KEY, encoding="utf-8")
+
+    if CUSTOM_DOMAIN:
+        (OUT / "CNAME").write_text(CUSTOM_DOMAIN + "\n", encoding="utf-8")
 
     for name, content in SITE_VERIFICATION_FILES:
         name = name.strip()
@@ -399,18 +509,66 @@ use the per-platform pages for like-for-like comparison.
         if len(items) >= MIN_GENRE_HUB
     }
 
+    # Titles that exist on a platform with a working referral link, keyed by a
+    # loose normalised title. ~3,047 of the pages are DramaBox, which has no
+    # affiliate programme at all, so without this their outbound link earns
+    # nothing. Where the same series is also on ReelShort we can offer the
+    # earning link alongside it instead of leaving the page unmetered.
+    referral_titles: dict[str, str] = {}
+    for d in dramas.values():
+        if d.get("platform") in REFERRAL_LINKS and d.get("title"):
+            referral_titles.setdefault(norm_title(d["title"]), d["title"])
+
+    # Slugs have to be assigned for every series before any page renders, so a
+    # page can link to another series' page that has not been written yet. Doing
+    # it inside the render loop previously meant recommendations could only be
+    # emitted for already-written pages, which is order-dependent and wrong.
+    slugs: dict[str, str] = {}
+    _used: dict[str, int] = {}
+    for key, d in dramas.items():
+        if not d.get("title"):
+            continue
+        s = slugify(d["title"])
+        if s in _used:
+            _used[s] += 1
+            s = f"{s}-{_used[s]}"
+        else:
+            _used[s] = 1
+        slugs[key] = s
+
+    # Only same-title matches exist between the two catalogues (88 of 3,031),
+    # which would leave 97% of DramaBox pages with no earning route. So when
+    # there is no title match, fall back to the best-performing ReelShort series
+    # sharing a theme: the recommendation is still relevant, and it points at a
+    # page whose own link earns.
+    def themed_alternatives(d: dict, limit: int = 3) -> list[dict]:
+        tags = {
+            t
+            for t in (list(d.get("themes") or d.get("tags") or []) + list(d.get("genres") or []))
+            if t
+        }
+        if not tags:
+            return []
+        scored = []
+        for k, cand in dramas.items():
+            if cand.get("platform") not in REFERRAL_LINKS or not cand.get("title"):
+                continue
+            ctags = set(
+                list(cand.get("themes") or cand.get("tags") or [])
+                + list(cand.get("genres") or [])
+            )
+            overlap = len(tags & ctags)
+            if overlap:
+                scored.append((overlap, engagement(cand), k, cand))
+        scored.sort(key=lambda r: (-r[0], -r[1]))
+        return [c for _, _, _, c in scored[:limit]]
+
     # ---- per-drama pages --------------------------------------------------
-    used_slugs: dict[str, int] = {}
     written = 0
     for key, d in dramas.items():
         if not d.get("title"):
             continue
-        slug = slugify(d["title"])
-        if slug in used_slugs:
-            used_slugs[slug] += 1
-            slug = f"{slug}-{used_slugs[slug]}"
-        else:
-            used_slugs[slug] = 1
+        slug = slugs[key]
 
         pf = d.get("platform", "")
         themes = d.get("themes") or d.get("tags") or d.get("subgenres") or []
@@ -433,11 +591,31 @@ use the per-platform pages for like-for-like comparison.
         if d.get("paid_start_chapter"):
             stats.append(("Free episodes", str(d["paid_start_chapter"])))
         if d.get("author"):
-            stats.append(("Author", d["author"]))
+            stats.append(("Author", d.get("author")))
+
+        # Day-over-day movement for this series, when two days exist. Shown as
+        # an explicit arrow rather than a bare number so the direction reads
+        # without comparing against anything.
+        ch = (deltas.get(pf) or {}).get(d.get("platform_id") or "")
+        if ch and not ch.get("new"):
+            rk = ch.get("shelf_rank") or ch.get("rank")
+            if isinstance(rk, dict) and rk.get("delta"):
+                arrow = "\u25b2" if rk["delta"] < 0 else "\u25bc"
+                stats.append(
+                    (
+                        "Rank change",
+                        f'{arrow} {int(rk["prev"])} \u2192 {int(rk["cur"])}',
+                    )
+                )
+            rd = ch.get("read_count") or ch.get("view_count")
+            if isinstance(rd, dict) and rd.get("delta"):
+                sign = "+" if rd["delta"] > 0 else "\u2212"
+                stats.append(("Reads change", f"{sign}{fmt_num(abs(rd['delta']))}"))
 
         meta_html = "".join(
             f"<div><b>{escape(str(k))}</b>{escape(str(v))}</div>" for k, v in stats
         )
+
         # Link a tag only if its hub was actually generated; otherwise render a
         # plain pill so we never emit a link to a page that does not exist.
         pill_parts = []
@@ -465,6 +643,37 @@ use the per-platform pages for like-for-like comparison.
         if genres:
             ld["genre"] = genres
 
+        # Cross-platform prompt: only when this page's own platform has no
+        # referral route. Prefer the same series on ReelShort; otherwise
+        # recommend thematically similar series whose pages carry the link.
+        # These point at our own pages, so the reader lands somewhere useful
+        # and the referral fires on the next click rather than being pushed at
+        # them immediately.
+        cross_html = ""
+        if pf not in REFERRAL_LINKS:
+            alt_title = referral_titles.get(norm_title(d["title"]))
+            if alt_title:
+                cross_html = f"""
+    <p style="margin-top:14px">
+      <a href="{escape(outbound_url('reelshort'))}" rel="nofollow sponsored noopener"
+         target="_blank">Also on ReelShort &mdash; open the app and search &ldquo;{escape(alt_title)}&rdquo; &rarr;</a>
+    </p>
+    {affiliate_note('reelshort')}"""
+            else:
+                alts = themed_alternatives(d)
+                if alts:
+                    items = "".join(
+                        f'<li><a href="{escape(slugs[k])}.html">{escape(a["title"])}</a></li>'
+                        for a in alts
+                        if (k := f"{a.get('platform')}:{a.get('platform_id')}") in slugs
+                    )
+                    if items:
+                        cross_html = f"""
+    <div class="note" style="margin-top:14px">
+      More on ReelShort (we earn a commission on those links):
+      <ul style="margin:6px 0 0 18px;padding:0">{items}</ul>
+    </div>"""
+
         detail = f"""
 <h1>{escape(d["title"])}</h1>
 <div class="detail">
@@ -472,9 +681,9 @@ use the per-platform pages for like-for-like comparison.
     {f'<img src="{escape(d["cover"])}" alt="{escape(d["title"])} cover">' if d.get("cover") else ""}
     <p style="margin-top:14px">
       <a href="{escape(outbound_url(pf))}" rel="nofollow sponsored noopener"
-         target="_blank">Watch on {escape(plat_label)} &rarr;</a>
+         target="_blank">{watch_label(pf, d["title"])} &rarr;</a>
     </p>
-    {affiliate_note(pf)}
+    {affiliate_note(pf)}{cross_html}
   </div>
   <div>
     <div class="meta">{meta_html}</div>
@@ -553,17 +762,61 @@ use the per-platform pages for like-for-like comparison.
             f"<th>Developer</th></tr></thead><tbody>{rows}</tbody></table>"
         )
 
+    # Movement, from the committed trend series. This is the part no competitor
+    # can copy: a platform only ever shows today's numbers, so yesterday's rank
+    # is gone unless someone recorded it. Rendered only once there are two days
+    # to compare - with one day there is no movement, and inventing one would be
+    # worse than showing nothing.
+    movers_html = ""
+    if deltas:
+        titles = {k: v.get("title", "") for k, v in dramas.items()}
+        slugs_by_key = {k: slugs.get(k, "") for k in dramas}
+        up, down = [], []
+        for pf, rows in deltas.items():
+            for pid, ch in rows.items():
+                key = f"{pf}:{pid}"
+                rk = ch.get("shelf_rank") or ch.get("rank")
+                if not isinstance(rk, dict) or not rk.get("delta"):
+                    continue
+                delta = rk["delta"]  # negative = moved up the chart
+                title = titles.get(key) or pid
+                slug = slugs_by_key.get(key)
+                label = (
+                    f'<a href="drama/{escape(slug)}.html">{escape(title)}</a>'
+                    if slug
+                    else escape(title)
+                )
+                row = (
+                    f"<li>{label} "
+                    f'<span style="color:var(--mut)">#{int(rk["prev"])} &rarr; '
+                    f'#{int(rk["cur"])}</span></li>'
+                )
+                (up if delta < 0 else down).append((abs(delta), row))
+        up.sort(key=lambda t: -t[0])
+        down.sort(key=lambda t: -t[0])
+        if up or down:
+            movers_html = (
+                "<h2>Biggest movers</h2>"
+                f"<p class='sub'>Change since {escape(deltas_date)}</p>"
+                "<div class='detail'><div><h3>Rising</h3><ul>"
+                + ("".join(r for _, r in up[:15]) or "<li>-</li>")
+                + "</ul></div><div><h3>Falling</h3><ul>"
+                + ("".join(r for _, r in down[:15]) or "<li>-</li>")
+                + "</ul></div></div>"
+            )
+
     (OUT / "charts.html").write_text(
         page(
             f"Short Drama App Store Rankings | {SITE_NAME}",
             f"<h1>App Store charts</h1>"
             f"<p class='sub'>US Entertainment category &middot; {escape(latest_date)}</p>"
+            + movers_html
             + chart_table(gross, "Top grossing")
             + chart_table(free_all, "Top free")
             + "<div class='note'>Rankings come from Apple's public RSS chart "
             "feed for the US Entertainment category, filtered to short-drama "
             "apps. Snapshots accumulate daily so movement can be tracked.</div>",
-            desc="Daily US App Store rankings for short drama apps.",
+            desc="Daily US App Store rankings for short drama apps, plus the biggest daily movers.",
         ),
         encoding="utf-8",
     )
@@ -642,7 +895,7 @@ Where outbound links are present they may be referral links.</p>""",
 
     # ---- sitemap / robots -------------------------------------------------
     urls = ["index.html", "charts.html", "genres.html", "about.html"]
-    urls += [f"drama/{s}.html" for s in sorted(used_slugs)]
+    urls += [f"drama/{s}.html" for s in sorted(slugs.values())]
     urls += [
         f"genre/{slugify(g)}.html"
         for g, items in genre_map.items()
