@@ -57,8 +57,9 @@ SITE_VERIFICATION_FILES = [
 # blank means outbound links are plain (non-monetised) links, which keeps the
 # site honest while the affiliate application is pending.
 REFERRAL_LINKS: dict[str, str] = {
-    # "reelshort": "https://...?ref=XXXX",
-    # "dramabox": "https://...?ref=XXXX",
+    # RS Boost referral link, verified 2026-09-16: 302s with attribution params
+    # (distribute_uid=17435) then lands on the App Store listing.
+    "reelshort": "https://reelslink.com/cps/cR6hNQ",
 }
 
 PLATFORM_LABELS = {
