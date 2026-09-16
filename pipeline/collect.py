@@ -24,7 +24,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -90,9 +90,23 @@ DRAMA_APP_MARKERS = (
 DELAY_SECONDS = 1.5
 
 
+def today_utc() -> str:
+    """The day a snapshot belongs to, in UTC.
+
+    UTC rather than local time throughout, and deliberately so: the trend series
+    is keyed by this date, run_daily.sh tests for today's file by the same key,
+    and build_site.py stamps sitemap lastmod with the UTC date (a future lastmod
+    is a documented reason for a sitemap to be rejected, and local time on a
+    UTC+8 machine runs a day ahead of Google's clock). Keeping three places on
+    one clock avoids the window from 00:00 to 08:00 Beijing where a local date
+    and a UTC date disagree and the skip check looks for the wrong file.
+    """
+    return datetime.now(timezone.utc).date().isoformat()
+
+
 def fetch(url: str, cache_key: str, *, force: bool = False, retries: int = 3) -> str:
     """Fetch a URL, caching the body under data/raw/<date>/<key>.html.gz."""
-    day = date.today().isoformat()
+    day = today_utc()
     cache_dir = RAW / day
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_file = cache_dir / f"{cache_key}.gz"
@@ -408,7 +422,7 @@ def main() -> int:
 
     snapshot = {
         "collected_at": stamp,
-        "date": date.today().isoformat(),
+        "date": today_utc(),
         "reelshort": reelshort,
         "dramabox": dramabox,
         "appstore": appstore,
@@ -432,7 +446,7 @@ def main() -> int:
         return 2
 
     SNAPS.mkdir(parents=True, exist_ok=True)
-    snap_file = SNAPS / f"{date.today().isoformat()}.json"
+    snap_file = SNAPS / f"{today_utc()}.json"
     snap_file.write_text(
         json.dumps(snapshot, ensure_ascii=False, indent=1), encoding="utf-8"
     )
