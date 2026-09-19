@@ -366,8 +366,39 @@ footer a{color:var(--mut)}
 """
 
 
-def page(title: str, body: str, *, desc: str = "", depth: int = 0) -> str:
+def page(
+    title: str,
+    body: str,
+    *,
+    desc: str = "",
+    depth: int = 0,
+    path: str = "",
+    image: str = "",
+) -> str:
+    """Render a full document.
+
+    path is the site-relative location ("drama/foo.html"); it is only used to
+    build absolute URLs, which canonical and the Open Graph tags require. A
+    relative canonical is ignored by crawlers, and without og:url/og:image a
+    shared link renders as a bare text row in every social app.
+    """
     up = "../" * depth
+    abs_url = f"{SITE_SCHEME}://{SITE_DOMAIN}/{path}" if path else ""
+    canonical = f'<link rel="canonical" href="{escape(abs_url)}">' if abs_url else ""
+    # og:image must be absolute; covers come from the platform CDN and are
+    # already absolute, so they pass through, otherwise fall back to our icon.
+    og_img = image or f"{SITE_SCHEME}://{SITE_DOMAIN}/icon-512.png"
+    social = (
+        f'<meta property="og:type" content="website">\n'
+        f'<meta property="og:title" content="{escape(title[:120])}">\n'
+        f'<meta property="og:description" content="{escape(desc[:300])}">\n'
+        f'<meta property="og:image" content="{escape(og_img)}">\n'
+        f'<meta name="twitter:card" content="summary_large_image">\n'
+        f'<meta name="twitter:title" content="{escape(title[:120])}">\n'
+        f'<meta name="twitter:description" content="{escape(desc[:300])}">\n'
+        f'<meta name="twitter:image" content="{escape(og_img)}">'
+        + (f'\n<meta property="og:url" content="{escape(abs_url)}">' if abs_url else "")
+    )
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -375,6 +406,8 @@ def page(title: str, body: str, *, desc: str = "", depth: int = 0) -> str:
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{escape(title)}</title>
 <meta name="description" content="{escape(desc[:300])}">
+{canonical}
+{social}
 <link rel="icon" href="{up}favicon.ico" sizes="any">
 <link rel="icon" type="image/png" href="{up}icon-192.png" sizes="192x192">
 <link rel="apple-touch-icon" href="{up}icon-180.png">
@@ -537,6 +570,7 @@ use the per-platform pages for like-for-like comparison.
         page(
             f"{SITE_NAME} - Short Drama Database & Trend Tracker",
             body,
+            path="index.html",
             desc="Browse and track short drama series from ReelShort and DramaBox: "
             "episode counts, genres, popularity and app-store chart movement.",
         ),
@@ -820,19 +854,33 @@ use the per-platform pages for like-for-like comparison.
                 pill_parts.append(f'<span class="pill">{escape(str(t))}</span>')
         pills = "".join(pill_parts)
 
-        # JSON-LD: give search engines and AI crawlers a clean entity.
+        # JSON-LD: give search engines and AI crawlers a clean entity. Built
+        # only from fields that actually have values - an empty "genre": null
+        # is worse than omitting the key, because it asserts the series has no
+        # genre rather than saying nothing.
         ld = {
             "@context": "https://schema.org",
             "@type": "TVSeries",
             "name": d["title"],
-            "numberOfEpisodes": d.get("chapter_count"),
-            "inLanguage": d.get("lang"),
-            "description": desc,
+            "url": f"{SITE_SCHEME}://{SITE_DOMAIN}/drama/{slug}.html",
         }
+        if d.get("chapter_count"):
+            ld["numberOfEpisodes"] = d["chapter_count"]
+        if d.get("lang"):
+            ld["inLanguage"] = str(d["lang"])
+        if desc:
+            ld["description"] = desc
         if d.get("cover"):
             ld["image"] = d["cover"]
-        if genres:
-            ld["genre"] = genres
+        tags_for_ld = [str(t) for t in (list(genres) + list(themes))[:8] if t]
+        if tags_for_ld:
+            ld["genre"] = tags_for_ld
+        if pf:
+            ld["provider"] = {
+                "@type": "Organization",
+                "name": PLATFORM_LABELS.get(pf, pf),
+                "url": PLATFORM_URLS.get(pf, ""),
+            }
 
         # Cross-platform prompt: only when this page's own platform has no
         # referral route. Prefer the same series on ReelShort; otherwise
@@ -896,6 +944,8 @@ use the per-platform pages for like-for-like comparison.
             page(
                 f"{d['title']} - {plat_label} | {SITE_NAME}",
                 detail,
+                path=f"drama/{slug}.html",
+                image=d.get("cover") or "",
                 desc=f"{d['title']} on {plat_label}. {desc}",
                 depth=1,
             ),
@@ -919,6 +969,7 @@ use the per-platform pages for like-for-like comparison.
             page(
                 f"{g} Short Dramas ({len(items)}) | {SITE_NAME}",
                 gbody,
+                path=f"genre/{gs}.html",
                 desc=f"{len(items)} short drama series tagged {g} across ReelShort and DramaBox.",
                 depth=1,
             ),
@@ -934,6 +985,7 @@ use the per-platform pages for like-for-like comparison.
             f"Short Drama Genres | {SITE_NAME}",
             f"<h1>Genres</h1><p class='sub'>{len(genre_rows)} tags</p>"
             f"<ul style='columns:2;list-style:none;padding:0'>{''.join(genre_rows)}</ul>",
+            path="genres.html",
             desc="Browse short drama series by genre and theme tag.",
         ),
         encoding="utf-8",
@@ -1008,6 +1060,7 @@ use the per-platform pages for like-for-like comparison.
             + "<div class='note'>Rankings come from Apple's public RSS chart "
             "feed for the US Entertainment category, filtered to short-drama "
             "apps. Snapshots accumulate daily so movement can be tracked.</div>",
+            path="charts.html",
             desc="Daily US App Store rankings for short drama apps, plus the biggest daily movers.",
         ),
         encoding="utf-8",
@@ -1056,6 +1109,7 @@ platform itself before making decisions.</p>
 <p>This site is not affiliated with, endorsed by, or operated by any short-drama
 platform. All titles, artwork, and trademarks belong to their respective owners.
 Where outbound links are present they may be referral links.</p>""",
+            path="about.html",
             desc=f"About {SITE_NAME}: data sources, collection policy, and independence.",
         ),
         encoding="utf-8",
