@@ -69,6 +69,25 @@ SITE_VERIFICATION_FILES = [
 # Referral/affiliate base URLs. Left blank until the affiliate account exists;
 # blank means outbound links are plain (non-monetised) links, which keeps the
 # site honest while the affiliate application is pending.
+# Per-series referral links, keyed by platform_id. Each entry was generated in
+# the RS Boost resource-square detail page and then verified: its redirect must
+# carry type=1001 (open the play screen for THIS series) and a parm1 equal to
+# the series id. A wrong entry sends the visitor to the wrong show, which is
+# worse than no link at all, so nothing is added here unverified.
+SERIES_REFERRAL_FILE = ROOT / "data" / "referral-links.json"
+
+
+def load_series_referrals() -> dict[str, str]:
+    if not SERIES_REFERRAL_FILE.is_file():
+        return {}
+    try:
+        return json.loads(SERIES_REFERRAL_FILE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+
+SERIES_REFERRALS = load_series_referrals()
+
 REFERRAL_LINKS: dict[str, str] = {
     # RS Boost referral link, verified 2026-09-16: 302s with attribution params
     # (distribute_uid=17435) then lands on the App Store listing.
@@ -221,21 +240,35 @@ def excerpt(text: str, limit: int = 200) -> str:
     return cut.rstrip(" ,;:") + "\u2026"
 
 
-def outbound_url(platform: str) -> str:
-    """Referral URL when one is configured, otherwise the plain platform URL."""
+def outbound_url(platform: str, series_id: str = "") -> str:
+    """Best referral URL for this platform, preferring a per-series link.
+
+    The account's generic short code is bound to one fixed series, so on any
+    other series page it lands the visitor somewhere they did not ask for. A
+    per-series code opens that series' play screen instead, which is what the
+    reader actually clicked. Falls back to the generic code when no verified
+    per-series link exists for this title.
+    """
+    if series_id and series_id in SERIES_REFERRALS:
+        return SERIES_REFERRALS[series_id]
     return REFERRAL_LINKS.get(platform) or PLATFORM_URLS.get(platform, "#")
 
 
-def watch_label(platform: str, title: str) -> str:
+def has_series_referral(series_id: str) -> bool:
+    return bool(series_id) and series_id in SERIES_REFERRALS
+
+
+def watch_label(platform: str, title: str, series_id: str = "") -> str:
     """Call-to-action text that matches what the link actually does.
 
-    The referral short code is bound server-side to one fixed series, and the
-    binding cannot be overridden from here (see REFERRAL_LINKS). So on any other
-    series page, naming that series in the button would be a promise the link
-    cannot keep - the visitor arrives on a different show and leaves. The label
-    therefore only claims what is true: the app opens. It deliberately does not
-    repeat the page's own title back at the reader.
+    With a per-series link the button can name the series, because the link
+    really does open it. Without one the generic code is bound server-side to a
+    single unrelated series, so naming this series would be a promise the link
+    cannot keep - the visitor lands on a different show and leaves. In that case
+    the label only claims what is true: the app opens.
     """
+    if has_series_referral(series_id):
+        return f"Watch &ldquo;{escape(title)}&rdquo; on {escape(PLATFORM_LABELS.get(platform, platform))}"
     if platform in SERIES_LOCKED_REFERRALS:
         return "Open the ReelShort app"
     return f"Watch on {escape(PLATFORM_LABELS.get(platform, platform))}"
@@ -919,8 +952,8 @@ use the per-platform pages for like-for-like comparison.
   <div>
     {f'<img src="{escape(d["cover"])}" alt="{escape(d["title"])} cover">' if d.get("cover") else ""}
     <p style="margin-top:14px">
-      <a href="{escape(outbound_url(pf))}" rel="nofollow sponsored noopener"
-         target="_blank">{watch_label(pf, d["title"])} &rarr;</a>
+      <a href="{escape(outbound_url(pf, d.get("platform_id","")))}" rel="nofollow sponsored noopener"
+         target="_blank">{watch_label(pf, d["title"], d.get("platform_id",""))} &rarr;</a>
     </p>
     {affiliate_note(pf)}{cross_html}
   </div>
