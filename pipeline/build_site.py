@@ -89,6 +89,26 @@ PLATFORM_LABELS = {
     "dramabox": "DramaBox",
 }
 
+# Shelf ids are internal slugs; printing them raw produced sentences like
+# "Ranks #192 of 245 in top", which reads as broken English. Category names from
+# DramaBox are already human-readable, so only these need mapping.
+SHELF_LABELS = {
+    "top": "the overall chart",
+    "new_release": "new releases",
+    "reel_original": "ReelShort Originals",
+    "hidden_identity": "Hidden Identity",
+    "love_at_first_sight": "Love at First Sight",
+    "second_chance": "Second Chance",
+    "pregnancy_babies": "Pregnancy & Babies",
+    "interactives": "Interactives",
+    "young_love": "Young Love",
+    "reeltalk": "ReelTalk",
+}
+
+# "all" is a browse bucket rather than a genre, so ranking inside it would claim
+# a category the reader cannot picture.
+SKIP_GROUPS = {"all"}
+
 # Header mark, inlined rather than loaded as a file: it is 300 bytes, saves a
 # request on every one of ~4,500 pages, and keeps the header rendering even if
 # the image fails. Geometry mirrors assets/favicon.ico (play triangle plus three
@@ -597,6 +617,53 @@ use the per-platform pages for like-for-like comparison.
         scored.sort(key=lambda r: (-r[0], -r[1]))
         return [c for _, _, _, c in scored[:limit]]
 
+    # Peer groups for the per-page comparison. Both platforms publish a ranking
+    # number, but neither publishes what it means relative to the rest of its
+    # category - and that comparison is the single most useful thing a reader
+    # can be told, because it is what distinguishes a hidden gem from a
+    # front-page hit. Computed once for the whole catalogue rather than per page
+    # (4,391 pages x a full scan would be quadratic).
+    peer_groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for d in dramas.values():
+        pf = d.get("platform")
+        if not d.get("title"):
+            continue
+        grp = d.get("shelf") if pf == "reelshort" else d.get("category")
+        if grp:
+            peer_groups[(pf, str(grp))].append(d)
+
+    def peer_stats(d: dict) -> dict | None:
+        """Where this series sits among its category peers."""
+        pf = d.get("platform")
+        grp = d.get("shelf") if pf == "reelshort" else d.get("category")
+        if not grp or str(grp) in SKIP_GROUPS:
+            return None
+        peers = peer_groups.get((pf, str(grp))) or []
+        if len(peers) < 5:
+            return None
+        label = (
+            SHELF_LABELS.get(str(grp), str(grp))
+            if pf == "reelshort"
+            else str(grp)
+        )
+
+        def metric(x: dict):
+            return x.get("read_count") or x.get("follow_count") or 0
+
+        ranked = sorted(peers, key=metric, reverse=True)
+        mine = metric(d)
+        if not mine:
+            return None
+        better = sum(1 for x in ranked if metric(x) > mine)
+        pct = 1 - (better / len(ranked))
+        return {
+            "group": label,
+            "n": len(ranked),
+            "rank": better + 1,
+            "top_pct": pct,
+            "median": ranked[len(ranked) // 2].get("title", ""),
+        }
+
     # ---- per-drama pages --------------------------------------------------
     written = 0
     for key, d in dramas.items():
@@ -613,19 +680,109 @@ use the per-platform pages for like-for-like comparison.
         desc = excerpt(raw_desc)
         plat_label = PLATFORM_LABELS.get(pf, pf)
 
+        # Only report a metric when the platform actually publishes it.
+        # DramaBox exposes follows and a rating but not view counts, so a shared
+        # "Reads" row rendered as "-" on 3,294 of its pages - a blank field that
+        # makes the page look broken and tells a reader nothing. Each platform
+        # now shows what it really has.
         stats = [
             ("Platform", plat_label),
             ("Episodes", fmt_num(d.get("chapter_count"))),
-            ("Reads", fmt_num(d.get("read_count") or d.get("view_count"))),
         ]
-        if d.get("collect_count"):
-            stats.append(("Collects", fmt_num(d["collect_count"])))
+        if pf == "reelshort":
+            stats.append(("Reads", fmt_num(d.get("read_count"))))
+            if d.get("collect_count"):
+                stats.append(("Collects", fmt_num(d["collect_count"])))
+        else:
+            if d.get("follow_count"):
+                stats.append(("Followers", fmt_num(d["follow_count"])))
+            if d.get("rating"):
+                stats.append(("Rating", f"{d['rating']}/10"))
+            if d.get("view_count"):
+                stats.append(("Views", fmt_num(d["view_count"])))
         if d.get("lang"):
             stats.append(("Language", str(d["lang"]).upper()))
         if d.get("paid_start_chapter"):
             stats.append(("Free episodes", str(d["paid_start_chapter"])))
         if d.get("author"):
             stats.append(("Author", d.get("author")))
+
+        # Facts a reader can use but that neither platform states outright. This
+        # is the part of the page that is ours: the underlying numbers are
+        # public, but the comparisons drawn from them are not, and a page of
+        # them is materially more useful than a synopsis plus a link. It is also
+        # the honest answer to "why index this rather than just use the app" -
+        # the platform never tells you the paywall ratio or the completion rate.
+        facts = []
+        n_ch = d.get("chapter_count")
+        ps = d.get("paid_start_chapter")
+        if isinstance(n_ch, int) and n_ch > 0:
+            if isinstance(ps, int) and ps > 1:
+                free = ps - 1
+                pct = free / n_ch
+                verdict = (
+                    "a generous free run"
+                    if pct >= 0.25
+                    else "a short free run"
+                    if pct <= 0.10
+                    else "a typical free run"
+                )
+                facts.append(
+                    f"<b>{free} of {n_ch} episodes</b> are free before the "
+                    f"paywall &mdash; {verdict} ({pct:.0%} of the series)."
+                )
+            elif isinstance(ps, int):
+                facts.append("<b>Paid from the first episode.</b>")
+            facts.append(
+                f"At 1&ndash;2 minutes an episode, the full {n_ch} runs about "
+                f"<b>{n_ch * 1.2 / 60:.0f}&ndash;{n_ch * 2.0 / 60:.0f} hours</b>."
+            )
+        rc, cc = d.get("read_count"), d.get("collect_count")
+        if rc and cc:
+            rate = cc / rc
+            facts.append(
+                f"<b>{rate:.1%}</b> of readers collect it &mdash; roughly 1 in "
+                f"{max(1, round(1 / rate)):,} decide to keep it."
+            )
+        if d.get("has_trailer"):
+            facts.append("A trailer is available on the platform page.")
+
+        # The comparison that neither platform offers: how this series sits
+        # against its own category. "Top 8% of 236 CEO dramas" is a judgement a
+        # reader cannot make themselves without opening all 236.
+        ps_stats = peer_stats(d)
+        if ps_stats:
+            pct = ps_stats["top_pct"]
+            # Neutral phrasing below the top quarter. These pages exist to send
+            # a reader onward, and "the quieter half" reads as a warning - it
+            # would talk them out of the very series they came to look at. The
+            # rank itself already carries the information for anyone who wants
+            # it, so the label only needs to place it, not judge it.
+            where = (
+                "the top 5% of the category"
+                if pct >= 0.95
+                else "the top 10% of the category"
+                if pct >= 0.90
+                else "the top quarter of the category"
+                if pct >= 0.75
+                else "the more-watched half"
+                if pct >= 0.50
+                else "a mid-catalogue title"
+            )
+            facts.append(
+                f"Ranks <b>#{ps_stats['rank']} of {ps_stats['n']}</b> in "
+                f"{escape(ps_stats['group'])} &mdash; {where}."
+            )
+
+        facts_html = ""
+        if facts:
+            facts_html = (
+                '<h2 style="font-size:16px;margin:20px 0 6px">'
+                "What the numbers say</h2>"
+                '<ul style="margin:0;padding-left:20px">'
+                + "".join(f"<li>{f}</li>" for f in facts)
+                + "</ul>"
+            )
 
         # Day-over-day movement for this series, when two days exist. Shown as
         # an explicit arrow rather than a bare number so the direction reads
@@ -721,7 +878,8 @@ use the per-platform pages for like-for-like comparison.
   </div>
   <div>
     <div class="meta">{meta_html}</div>
-    {f'<p>{escape(desc)}</p>' if desc else ''}
+    {facts_html}
+    {f'<p style="margin-top:14px">{escape(desc)}</p>' if desc else ''}
     {f'<div style="margin-top:14px">{pills}</div>' if pills else ''}
     <div class="note">
       Synopsis quoted in brief from {escape(plat_label)}; see the
