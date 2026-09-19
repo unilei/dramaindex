@@ -29,6 +29,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SNAP_DIR = ROOT / "data" / "snapshots"
 HISTORY_DIR = ROOT / "data" / "history"
+ASSETS = ROOT / "assets"
 OUT = ROOT / "site"
 
 SITE_NAME = "DramaIndex"
@@ -87,6 +88,21 @@ PLATFORM_LABELS = {
     "reelshort": "ReelShort",
     "dramabox": "DramaBox",
 }
+
+# Header mark, inlined rather than loaded as a file: it is 300 bytes, saves a
+# request on every one of ~4,500 pages, and keeps the header rendering even if
+# the image fails. Geometry mirrors assets/favicon.ico (play triangle plus three
+# index bars) so the tab icon and the header read as the same mark.
+LOGO_SVG = (
+    '<svg class="mark" viewBox="0 0 32 32" width="20" height="20" '
+    'aria-hidden="true" focusable="false">'
+    '<rect width="32" height="32" rx="7" fill="#0d0f14" stroke="#242a37"/>'
+    '<path d="M9 8.5v15l13-7.5z" fill="#ff4d6d"/>'
+    '<rect x="20.5" y="9" width="6" height="2.6" rx="1.3" fill="#8b95a8"/>'
+    '<rect x="20.5" y="14.7" width="6" height="2.6" rx="1.3" fill="#e8ecf3"/>'
+    '<rect x="20.5" y="20.4" width="6" height="2.6" rx="1.3" fill="#8b95a8"/>'
+    "</svg>"
+)
 
 PLATFORM_URLS = {
     "reelshort": "https://www.reelshort.com/",
@@ -286,7 +302,9 @@ a{color:var(--acc2);text-decoration:none}a:hover{text-decoration:underline}
 header{border-bottom:1px solid var(--line);padding:14px 20px;display:flex;
 gap:20px;align-items:center;flex-wrap:wrap;position:sticky;top:0;
 background:rgba(13,15,20,.95);backdrop-filter:blur(8px);z-index:10}
-.logo{font-weight:700;font-size:18px;color:var(--tx)}
+.logo{font-weight:700;font-size:18px;color:var(--tx);display:inline-flex;
+align-items:center;gap:8px}
+.logo .mark{display:block;flex:none}
 .logo span{color:var(--acc)}
 nav a{color:var(--mut);margin-right:14px;font-size:14px}
 main{max-width:1180px;margin:0 auto;padding:24px 20px 60px}
@@ -337,11 +355,15 @@ def page(title: str, body: str, *, desc: str = "", depth: int = 0) -> str:
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{escape(title)}</title>
 <meta name="description" content="{escape(desc[:300])}">
+<link rel="icon" href="{up}favicon.ico" sizes="any">
+<link rel="icon" type="image/png" href="{up}icon-192.png" sizes="192x192">
+<link rel="apple-touch-icon" href="{up}icon-180.png">
+<meta name="theme-color" content="#0d0f14">
 <link rel="stylesheet" href="{up}style.css">
 </head>
 <body>
 <header>
-  <a class="logo" href="{up}index.html">Drama<span>Index</span></a>
+  <a class="logo" href="{up}index.html">{LOGO_SVG}Drama<span>Index</span></a>
   <nav>
     <a href="{up}index.html">Trending</a>
     <a href="{up}charts.html">App Charts</a>
@@ -402,6 +424,18 @@ def build():
     (OUT / "genre").mkdir()
     (OUT / "data").mkdir()
     (OUT / "style.css").write_text(CSS, encoding="utf-8")
+
+    # Icons live in assets/ rather than being drawn here: build_site.py is
+    # stdlib-only by design, and generating PNG/ICO would pull in Pillow. They
+    # are static, so copying is enough - but it has to happen on every run,
+    # because OUT is wiped first and a hand-placed file would vanish at the next
+    # daily build (the same trap the CNAME file fell into).
+    if ASSETS.is_dir():
+        for asset in sorted(ASSETS.iterdir()):
+            if asset.is_file():
+                shutil.copy2(asset, OUT / asset.name)
+    else:
+        print(f"warning: {ASSETS} missing; site will ship without icons")
 
     # GitHub Pages runs Jekyll by default, which skips files it does not
     # recognise. An empty .nojekyll disables that and serves everything as-is.
