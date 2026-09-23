@@ -104,8 +104,17 @@ def today_utc() -> str:
     return datetime.now(timezone.utc).date().isoformat()
 
 
-def fetch(url: str, cache_key: str, *, force: bool = False, retries: int = 3) -> str:
-    """Fetch a URL, caching the body under data/raw/<date>/<key>.html.gz."""
+def fetch(url: str, cache_key: str, *, force: bool = False, retries: int = 5) -> str:
+    """Fetch a URL, caching the body under data/raw/<date>/<key>.html.gz.
+
+    Retries were raised from 3 to 5, with exponential rather than linear
+    backoff, because DramaBox intermittently drops the TLS connection mid-flight
+    (`SSL: UNEXPECTED_EOF_WHILE_READING`). That killed whole crawls three times
+    (09-17, 09-19, 09-23) when every request in a run happened to land in a bad
+    window; the same URLs succeed minutes later, so it is a transient origin or
+    network condition rather than a block. Short linear backoff gave up before
+    the window passed.
+    """
     day = today_utc()
     cache_dir = RAW / day
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -122,6 +131,8 @@ def fetch(url: str, cache_key: str, *, force: bool = False, retries: int = 3) ->
             "Accept": "text/html,application/json,*/*",
             "Accept-Language": "en-US,en;q=0.9",
             "Accept-Encoding": "identity",
+            # Keep-alive off on purpose: a pooled connection that the origin has
+            # already half-closed is a common source of UNEXPECTED_EOF.
             "Connection": "close",
         },
     )
@@ -129,11 +140,15 @@ def fetch(url: str, cache_key: str, *, force: bool = False, retries: int = 3) ->
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 body = resp.read().decode("utf-8", errors="replace")
+            if not body:
+                raise ValueError("empty body")
             with gzip.open(cache_file, "wt", encoding="utf-8") as fh:
                 fh.write(body)
             time.sleep(DELAY_SECONDS)
             return body
         except urllib.error.HTTPError as exc:
+            # 403/404 are definitive answers from the origin; retrying will not
+            # change them and only adds load.
             print(f"  ! HTTP {exc.code} for {url}", file=sys.stderr)
             return ""
         except Exception as exc:  # noqa: BLE001 - network flake, retry then give up
@@ -143,7 +158,8 @@ def fetch(url: str, cache_key: str, *, force: bool = False, retries: int = 3) ->
                     file=sys.stderr,
                 )
                 return ""
-            time.sleep(DELAY_SECONDS * attempt)
+            # Exponential backoff (1.5s, 3s, 6s, 12s) instead of linear.
+            time.sleep(DELAY_SECONDS * (2 ** (attempt - 1)))
     return ""
 
 
@@ -439,8 +455,11 @@ def main() -> int:
         for p in problems:
             print(f"  - {p}", file=sys.stderr)
         print(
-            "  Most likely cause for a datacentre runner is a 403/WAF block "
-            "on the origin. Leaving existing data untouched.",
+            "  Causes seen so far: an origin-side TLS drop "
+            "(SSL: UNEXPECTED_EOF_WHILE_READING) during a short bad window, or a "
+            "WAF block when the crawler runs from a datacentre IP. Both are "
+            "transient or environmental, not a code fault. Leaving existing data "
+            "untouched; the next scheduled run will retry.",
             file=sys.stderr,
         )
         return 2
